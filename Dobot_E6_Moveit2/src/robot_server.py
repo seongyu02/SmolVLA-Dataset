@@ -213,6 +213,12 @@ _state = {
     "last_place_y":   None,
     "task_mode":      "zone_move",
     "zone_episode_idx": 0,
+    "zone_stats":     {},
+    "current_zone_id": None,
+    "current_zone_episode": 0,
+    "last_auto_error": "",
+    "last_auto_done": 0,
+    "last_auto_target": 0,
 }
 
 _state_lock  = threading.Lock()
@@ -234,6 +240,22 @@ ZONE_XY_OFFSET_MM = 8.0
 ZONE_EPISODES_PER_ZONE = 10
 ZONE_ORDER = ["1", "5", "8", "9", "10"]
 ZONE_TASK_TOTAL = len(ZONE_ORDER) * ZONE_EPISODES_PER_ZONE
+
+def _new_zone_stats():
+    return {
+        zid: {"success": 0, "fail": 0, "status": "pending"}
+        for zid in ZONE_ORDER
+    }
+
+def _reset_zone_progress():
+    _state["zone_stats"] = _new_zone_stats()
+    _state["current_zone_id"] = None
+    _state["current_zone_episode"] = 0
+    _state["last_auto_error"] = ""
+    _state["last_auto_done"] = 0
+    _state["last_auto_target"] = 0
+
+_reset_zone_progress()
 
 def _mid_pose(a, b):
     return tuple((float(x) + float(y)) / 2.0 for x, y in zip(a, b))
@@ -444,7 +466,7 @@ def _start_recording():
         w = _state.get("worker")
         if w:
             w._stop_requested = True
-        _state.update(auto_target=0, auto_done=0)
+        # Keep auto counters until _on_finished(False) records the failed zone.
         return
     # ────────────────────────────────────────────────────────────────────────
 
@@ -461,7 +483,7 @@ def _start_recording():
         w = _state.get("worker")
         if w:
             w._stop_requested = True
-        _state.update(auto_target=0, auto_done=0)
+        # Keep auto counters until _on_finished(False) records the failed zone.
         return
 
     _state.update(recording=True, recorded_data=[], record_save_dir=save_dir,
@@ -799,6 +821,9 @@ def _on_episode_meta(meta): _state["episode_meta"] = meta
 
 def _on_finished(success: bool):
     w = _state["worker"]
+    zone_id = str(getattr(w, "zone_id", _state.get("current_zone_id")))
+    episode_in_zone = getattr(w, "episode_in_zone", None)
+    auto_target = _state["auto_target"]
     if not getattr(w, "_recording_saved_before_finished", False):
         _stop_and_save(success)
     if w and hasattr(w, 'place_x') and w.place_x is not None:
@@ -807,16 +832,35 @@ def _on_finished(success: bool):
         _state["pick_section"] = "B" if _state["pick_section"] == "A" else "A"
         _log(f"Place ({w.place_x:.1f},{w.place_y:.1f}) / next: {_state['pick_section']}")
 
-    if _state["auto_target"] > 0:
+    if auto_target > 0:
+        zone_stats = _state["zone_stats"].setdefault(
+            zone_id, {"success": 0, "fail": 0, "status": "pending"}
+        )
         if not success:
             # STOP 또는 실패 → 자동 수집 중단, 카운트 증가 없음
-            _state.update(auto_target=0, auto_done=0)
+            zone_stats["fail"] += 1
+            zone_stats["status"] = "failed"
+            ep_label = episode_in_zone + 1 if episode_in_zone is not None else "?"
+            _state["last_auto_done"] = _state["auto_done"]
+            _state["last_auto_target"] = auto_target
+            _state["last_auto_error"] = f"Failed at zone {zone_id}, episode {ep_label}"
+            _state["auto_target"] = 0
             _log("⚠ 자동 수집 중단됨 (실패/STOP)")
             return
+        zone_stats["success"] += 1
         _state["auto_done"] += 1
+        _state["last_auto_done"] = _state["auto_done"]
+        _state["last_auto_target"] = auto_target
+        zone_stats["status"] = "done" if zone_stats["success"] >= ZONE_EPISODES_PER_ZONE else "running"
         _log(f"Auto {_state['auto_done']}/{_state['auto_target']}")
-        if _state["auto_done"] >= _state["auto_target"]:
-            _state.update(auto_target=0, auto_done=0)
+        if _state["auto_done"] >= auto_target:
+            _state["last_auto_done"] = _state["auto_done"]
+            _state["last_auto_target"] = auto_target
+            _state["last_auto_error"] = ""
+            for zid in ZONE_ORDER:
+                _state["zone_stats"].setdefault(zid, {"success": 0, "fail": 0, "status": "pending"})
+                _state["zone_stats"][zid]["status"] = "done"
+            _state["auto_target"] = 0
             _log("Auto collect complete")
         else:
             threading.Timer(0.3, _run_step).start()
@@ -838,6 +882,13 @@ def _run_step():
         ep_in_zone = 0
         _state["zone_episode_idx"] = seq_idx + 1
     zone_id = ZONE_ORDER[seq_idx]
+    _state["current_zone_id"] = zone_id
+    _state["current_zone_episode"] = ep_in_zone + 1
+    zone_stats = _state["zone_stats"].setdefault(
+        zone_id, {"success": 0, "fail": 0, "status": "pending"}
+    )
+    if zone_stats["success"] < ZONE_EPISODES_PER_ZONE:
+        zone_stats["status"] = "running"
 
     worker = ZoneMoveWithoutSuctionWorker(robot, zone_id=zone_id, episode_in_zone=ep_in_zone)
     worker.log_signal.connect(_on_log)
@@ -992,6 +1043,12 @@ def status():
         "auto_done":      _state["auto_done"],
         "zone_order":     ZONE_ORDER,
         "zone_episodes_per_zone": ZONE_EPISODES_PER_ZONE,
+        "zone_stats":     _state["zone_stats"],
+        "current_zone_id": _state["current_zone_id"],
+        "current_zone_episode": _state["current_zone_episode"],
+        "last_auto_error": _state["last_auto_error"],
+        "last_auto_done": _state["last_auto_done"],
+        "last_auto_target": _state["last_auto_target"],
         "worker_running": bool(_state["worker"] and _state["worker"].isRunning()),
     }
 
@@ -1167,7 +1224,18 @@ def zone_dataset_start(episodes_per_zone: int = ZONE_EPISODES_PER_ZONE):
             {"ok": False, "msg": f"episodes_per_zone must be {ZONE_EPISODES_PER_ZONE} for current zone schedule"},
             status_code=400,
         )
-    return auto_collect(total)
+    if _state["worker"] and _state["worker"].isRunning():
+        return JSONResponse({"ok": False, "msg": "Already running"}, status_code=400)
+    if not _state["robot"] or not _state["robot"].connected:
+        return JSONResponse({"ok": False, "msg": "Not connected"}, status_code=400)
+    _reset_zone_progress()
+    _state["auto_target"] = total
+    _state["auto_done"] = 0
+    _state["last_auto_target"] = total
+    _state["last_auto_done"] = 0
+    _log(f"Zone dataset auto collect started: {total} episodes")
+    threading.Thread(target=_run_step, daemon=True).start()
+    return {"ok": True}
 
 @app.post("/pick-place/stop")
 def stop_collect():
@@ -1310,6 +1378,11 @@ button:active{filter:brightness(1.3)}
 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;vertical-align:middle}
 .on{background:#2dc653}.off{background:#e63946}.rec{background:#e63946;animation:blink 1s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+#zone-table{width:100%;border-collapse:collapse;margin:6px 0 8px;background:#0d1a2e;border-radius:4px;overflow:hidden;font-size:.68rem}
+#zone-table th,#zone-table td{padding:4px 6px;border-bottom:1px solid #1e2a3a;text-align:left}
+#zone-table th{color:#00c8e8;font-weight:600;background:#0a0f1e}
+#zone-table tr:last-child td{border-bottom:none}
+.zstat.done{color:#2dc653}.zstat.running{color:#f4a261}.zstat.failed{color:#e63946}.zstat.pending{color:#889}
 
 /* dashboard grid */
 .dash-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
@@ -1417,6 +1490,13 @@ input[type=range]{width:100%;accent-color:#00c8e8}
   <div class="card">
     <h3>Zone Move Dataset</h3>
     <div id="auto-bar" class="sbar">Ready</div>
+    <div class="sub">Zone Progress</div>
+    <table id="zone-table">
+      <thead>
+        <tr><th>Zone</th><th>Success</th><th>Fail</th><th>Status</th></tr>
+      </thead>
+      <tbody id="zone-table-body"></tbody>
+    </table>
     <div class="row">
       <button class="btn-g" onclick="api('POST','/zone-dataset/step')">▶ Zone Step</button>
       <input id="auto-n" type="number" value="50" min="1" style="max-width:55px">
@@ -1612,12 +1692,27 @@ setInterval(async () => {
   $('hik-stat').style.color  = s.cam_hik ? '#2dc653' : '#668';
   $('zed-stat').textContent  = s.cam_zed ? 'ON ●' : 'OFF';
   $('zed-stat').style.color  = s.cam_zed ? '#2dc653' : '#668';
-  if(s.auto_target > 0)
-    $('auto-bar').textContent = `Auto: ${s.auto_done}/${s.auto_target}`;
-  else if(s.worker_running)
+  if(s.auto_target > 0) {
+    $('auto-bar').textContent =
+      `Auto: ${s.auto_done}/${s.auto_target} | Current Zone: ${s.current_zone_id||'—'} | Episode: ${s.current_zone_episode||0}/${s.zone_episodes_per_zone}`;
+  } else if((s.last_auto_target||0) > 0) {
+    $('auto-bar').textContent = `Last Auto: ${s.last_auto_done}/${s.last_auto_target}`
+      + (s.last_auto_error ? ` | Failed: ${s.last_auto_error}` : ' | Complete');
+  } else if(s.worker_running) {
     $('auto-bar').textContent = 'Running…';
-  else
+  } else {
     $('auto-bar').textContent = 'Ready';
+  }
+  const zoneBody = $('zone-table-body');
+  if(zoneBody) {
+    const order = s.zone_order || [];
+    const stats = s.zone_stats || {};
+    zoneBody.innerHTML = order.map(zid => {
+      const z = stats[zid] || {success:0, fail:0, status:'pending'};
+      const status = z.status || 'pending';
+      return `<tr><td>${zid}</td><td>${z.success||0}/${s.zone_episodes_per_zone}</td><td>${z.fail||0}</td><td class="zstat ${status}">${status}</td></tr>`;
+    }).join('');
+  }
 }, 800);
 
 // ── Jog logic ──────────────────────────────
