@@ -230,12 +230,11 @@ FIXED_INIT = (89.3715, -378.5400, 250.0000, -179.5275, -2.4369, 2.3663)
 
 # Zone move dataset parameters — 실기에서 실행 전 반드시 확인/튜닝할 값.
 # - ZONE_INIT_POSE: 초기자세. 현재 실측 안전 대기 위치를 사용.
-# - ZONE_TRAVEL_Z_RANGE: 목표 zone 상단 이동 높이 랜덤 범위.
-# - ZONE_TARGET_Z_OFFSET_RANGE: zone 기준 Z 근처 하강 목표의 작은 랜덤 offset.
+# - Zone move task keeps the base PickPlaceStepWorker travel/descent flow.
+# - ZONE_TARGET_Z: 이번 task의 최종 하강 Z.
 # - ZONE_XY_OFFSET_MM: 목표 zone 내부 XY 미세 랜덤 offset.
 ZONE_INIT_POSE = (89.3715, -378.5400, 250.0000, INIT_SAFE_RX, INIT_SAFE_RY, INIT_SAFE_RZ)
-ZONE_TRAVEL_Z_RANGE = (180.0, 240.0)
-ZONE_TARGET_Z_OFFSET_RANGE = (0.0, 5.0)
+ZONE_TARGET_Z = 120.0
 ZONE_XY_OFFSET_MM = 8.0
 ZONE_EPISODES_PER_ZONE = 10
 ZONE_ORDER = ["1", "5", "8", "9", "10"]
@@ -717,11 +716,11 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
 
     def _sample_target_pose_with_ik(self):
         base_pose = ZONE_POSES[self.zone_id]
-        bx, by, bz, brx, bry, brz = [float(v) for v in base_pose[:6]]
+        bx, by, *_ = [float(v) for v in base_pose[:6]]
         for attempt in range(60):
             x = bx + random.uniform(-ZONE_XY_OFFSET_MM, ZONE_XY_OFFSET_MM)
             y = by + random.uniform(-ZONE_XY_OFFSET_MM, ZONE_XY_OFFSET_MM)
-            z = bz + random.uniform(*ZONE_TARGET_Z_OFFSET_RANGE)
+            z = ZONE_TARGET_Z
             rx, ry, rz = base.get_descent_rpy(x, y)
             ok, msg = self.robot.check_ik_solution(x, y, z, rx, ry, rz)
             if ok:
@@ -769,7 +768,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
                 return
 
             tx, ty, tz, trx, try_, trz = target_pose
-            travel_z = random.uniform(*ZONE_TRAVEL_Z_RANGE)
+            travel_z = random.uniform(base.Z_MOVE_MIN, base.Z_MOVE_MAX)
             self._log(
                 f"3) Moving above zone_{self.zone_id}: "
                 f"X={tx:.1f} Y={ty:.1f} Z={travel_z:.1f}"
