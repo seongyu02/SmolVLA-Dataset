@@ -239,7 +239,7 @@ ZONE_X_OFFSET_MM = 5.0
 ZONE_Y_OFFSET_MM = 3.0
 ZONE_TRAVEL_Z_RANGE = (150.0, 240.0)
 ZONE_EPISODES_PER_ZONE = 10
-ZONE_ORDER = ["1", "5", "6", "8", "9"]
+ZONE_ORDER = ["2", "5", "6", "8", "9"]
 ZONE_TASK_TOTAL = len(ZONE_ORDER) * ZONE_EPISODES_PER_ZONE
 
 def _new_zone_stats():
@@ -259,7 +259,7 @@ def _reset_zone_progress():
 _reset_zone_progress()
 
 ZONE_POSES = {
-    "1": base.POS_1,
+    "2": base.POS_2,
     "5": base.POS_5,
     "6": base.POS_6,
     "8": base.POS_8,
