@@ -239,7 +239,7 @@ FIXED_INIT = (89.3715, -378.5400, 250.0000, -179.5275, -2.4369, 2.3663)
 ZONE_INIT_POSE = (89.3715, -378.5400, 250.0000, INIT_SAFE_RX, INIT_SAFE_RY, INIT_SAFE_RZ)
 ZONE_TARGET_Z = 120.0
 ZONE_XY_OFFSET_MM = 8.0
-ZONE4_XY_OFFSET_MM = 5.0
+SINGLE_ZONE_XY_OFFSET_MM = 5.0
 ZONE_EPISODES_PER_ZONE = 10
 ZONE_ORDER = ["1", "5", "8", "9", "10"]
 ZONE_TASK_TOTAL = len(ZONE_ORDER) * ZONE_EPISODES_PER_ZONE
@@ -849,7 +849,7 @@ def _on_finished(success: bool):
             zone_stats["status"] = "failed"
             ep_label = episode_in_zone + 1 if episode_in_zone is not None else "?"
             _state["last_auto_error"] = f"Failed at zone {zone_id}, episode {ep_label}"
-            _log("⚠ 4구역 수집 중단됨 (실패/STOP)")
+            _log(f"⚠ {zone_id}구역 수집 중단됨 (실패/STOP)")
             _state["single_zone_target"] = 0
             return
         zone_stats["success"] += 1
@@ -910,7 +910,7 @@ def _run_step():
     if _state.get("single_zone_target", 0) > 0:
         zone_id = str(_state.get("single_zone_id") or "4")
         ep_in_zone = int(_state.get("single_zone_done", 0))
-        xy_offset_mm = ZONE4_XY_OFFSET_MM
+        xy_offset_mm = SINGLE_ZONE_XY_OFFSET_MM
     elif _state.get("auto_target", 0) > 0:
         seq_idx = min(_state["auto_done"] // ZONE_EPISODES_PER_ZONE, len(ZONE_ORDER) - 1)
         ep_in_zone = _state["auto_done"] % ZONE_EPISODES_PER_ZONE
@@ -1279,7 +1279,14 @@ def zone_dataset_start(episodes_per_zone: int = ZONE_EPISODES_PER_ZONE):
 
 @app.post("/zone4-section/start")
 def zone4_section_start(n: int = 10):
+    return zone_section_start(zone_id="4", n=n)
+
+@app.post("/zone-section/start")
+def zone_section_start(zone_id: str = "4", n: int = 10):
+    zone_id = str(zone_id)
     n = 10
+    if zone_id not in ZONE_POSES:
+        return JSONResponse({"ok": False, "msg": f"Unknown zone_id: {zone_id}"}, status_code=400)
     if _state["worker"] and _state["worker"].isRunning():
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=400)
     if not _state["robot"] or not _state["robot"].connected:
@@ -1287,12 +1294,12 @@ def zone4_section_start(n: int = 10):
     _reset_zone_progress()
     _state["auto_target"] = 0
     _state["auto_done"] = 0
-    _state["single_zone_id"] = "4"
+    _state["single_zone_id"] = zone_id
     _state["single_zone_target"] = n
     _state["single_zone_done"] = 0
-    _state["zone_stats"].setdefault("4", {"success": 0, "fail": 0, "status": "pending"})
-    _state["zone_stats"]["4"]["status"] = "running"
-    _log(f"Zone 4 section collect started: {n} episodes (XY ±{ZONE4_XY_OFFSET_MM}mm)")
+    _state["zone_stats"].setdefault(zone_id, {"success": 0, "fail": 0, "status": "pending"})
+    _state["zone_stats"][zone_id]["status"] = "running"
+    _log(f"Zone {zone_id} section collect started: {n} episodes (XY ±{SINGLE_ZONE_XY_OFFSET_MM}mm)")
     threading.Thread(target=_run_step, daemon=True).start()
     return {"ok": True}
 
@@ -1562,6 +1569,9 @@ input[type=range]{width:100%;accent-color:#00c8e8}
       <input id="auto-n" type="number" value="10" min="1" style="max-width:55px">
       <button class="btn-g" onclick="autoCollect()">▶ Auto</button>
       <button class="btn-g" onclick="collectZone4Only()">▶ 4번 섹션</button>
+      <button class="btn-g" onclick="collectZoneOnly('1')">▶ 1번 섹션</button>
+      <button class="btn-g" onclick="collectZoneOnly('5')">▶ 5번 섹션</button>
+      <button class="btn-g" onclick="collectZoneOnly('10')">▶ 10번 섹션</button>
       <button class="btn-y" onclick="api('POST','/pick-place/stop')">■ Stop</button>
     </div>
     <button class="btn-r" style="width:100%;padding:8px;font-size:.82rem;font-weight:700" onclick="doEstop()">⚠ E-STOP</button>
@@ -1755,7 +1765,7 @@ setInterval(async () => {
   $('zed-stat').style.color  = s.cam_zed ? '#2dc653' : '#668';
   if((s.single_zone_target||0) > 0) {
     $('auto-bar').textContent =
-      `Zone 4: ${s.single_zone_done}/${s.single_zone_target} | Current Zone: ${s.current_zone_id||'4'} | Episode: ${s.current_zone_episode||0}/${s.single_zone_target}`;
+      `Zone ${s.single_zone_id||s.current_zone_id||'4'}: ${s.single_zone_done}/${s.single_zone_target} | Current Zone: ${s.current_zone_id||s.single_zone_id||'4'} | Episode: ${s.current_zone_episode||0}/${s.single_zone_target}`;
   } else if(s.auto_target > 0) {
     $('auto-bar').textContent =
       `Auto: ${s.auto_done}/${s.auto_target} | Current Zone: ${s.current_zone_id||'—'} | Episode: ${s.current_zone_episode||0}/${s.zone_episodes_per_zone}`;
@@ -1846,6 +1856,7 @@ const autoCollect = () => {
   return api('POST','/zone-dataset/start',{episodes_per_zone:n});
 };
 const collectZone4Only = () => api('POST','/zone4-section/start',{n:10});
+const collectZoneOnly = zone_id => api('POST','/zone-section/start',{zone_id, n:10});
 const doEstop = () => { if(confirm('E-STOP?')) api('POST','/estop'); };
 const clearAlarm = async () => {
   const d = await api('POST','/clear-alarm');
