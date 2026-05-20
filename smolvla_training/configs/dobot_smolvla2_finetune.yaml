@@ -1,0 +1,41 @@
+dataset_root: "/media/billye6/새 볼륨/Dobot/SmolVLA_lerobot_v21"
+output_dir: "/home/billye6/SmolVLA-Dataset/smolvla_training/outputs/dobot_e6_zone_move_20fps_13d_chunk20"
+robot_type: "dobot_e6"
+policy_type: "smolvla2"
+
+vlm_backbone: "SmolVLM-2"
+vision_encoder: "SigLIP"
+language_decoder: "SmolLM2"
+action_expert: "FlowMatchingTransformer"
+
+fps: 20
+state_dim: 13
+action_dim: 13
+max_state_dim: null
+max_action_dim: null
+chunk_size: 20
+
+image_keys:
+  - "observation.images.OBS_IMAGE_1"
+  - "observation.images.OBS_IMAGE_2"
+state_key: "observation.state"
+action_key: "action"
+
+pretrained_checkpoint: ""
+
+train_expert_only: true
+freeze_vision_encoder: true
+train_action_expert: true
+train_state_projector: true
+train_action_in_projector: true
+train_action_out_projector: true
+train_action_head: true
+train_feature_projector: true
+
+batch_size: 4
+learning_rate: 0.0001
+num_train_steps: 10000
+save_every: 1000
+num_workers: 4
+use_amp: true
+seed: 42

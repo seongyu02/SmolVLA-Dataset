@@ -25,6 +25,7 @@ RAW_ROOT = Path("/media/billye6/새 볼륨/Dobot/SmolVLA")
 OUT_ROOT = Path("/media/billye6/새 볼륨/Dobot/SmolVLA_lerobot_v21")
 FPS = 20
 OVERWRITE = True
+TEST_LEROBOT_LOAD = True
 CHUNK_NAME = "chunk-000"
 
 VIDEO_SIZE = (512, 512)
@@ -234,6 +235,48 @@ def validate_episode(out_root, episode_index):
             f"parquet={rows}, hik={hik_frames}, zed={zed_frames}"
         )
     print(f"[Validate] episode_{episode_index:06d} OK")
+
+
+def validate_all_episodes(out_root, total_episodes):
+    ok_count = 0
+    for episode_index in range(total_episodes):
+        try:
+            validate_episode(out_root, episode_index)
+            ok_count += 1
+        except Exception as exc:
+            raise RuntimeError(f"[Validate All] FAILED at episode_{episode_index:06d}: {exc}") from exc
+    print(f"[Validate All] {ok_count}/{total_episodes} episodes OK")
+    print("[Validate All] parquet rows and video frames are aligned.")
+
+
+def test_lerobot_dataset_load(out_root):
+    if not TEST_LEROBOT_LOAD:
+        print("[LeRobot Load Test] SKIP: TEST_LEROBOT_LOAD=False")
+        return
+    try:
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+    except Exception as exc:
+        print(f"[LeRobot Load Test] SKIP: import failed: {exc}")
+        return
+
+    try:
+        dataset = LeRobotDataset(str(out_root))
+        print(f"[LeRobot Load Test] dataset loaded: len={len(dataset)}")
+        sample = dataset[0]
+        required_keys = [
+            "observation.state",
+            "action",
+            "timestamp",
+            "frame_index",
+            "episode_index",
+            "task_index",
+        ]
+        for key in required_keys:
+            if key not in sample:
+                raise RuntimeError(f"missing key: {key}")
+        print("[LeRobot Load Test] first sample keys OK")
+    except Exception as exc:
+        raise RuntimeError(f"[LeRobot Load Test] FAILED: {exc}") from exc
 
 
 def _prepare_output_dirs():
@@ -486,6 +529,9 @@ def convert():
     with info_path.open("w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False, indent=2)
     print("[Meta] info.json saved")
+
+    validate_all_episodes(OUT_ROOT, out_episode_index)
+    test_lerobot_dataset_load(OUT_ROOT)
 
     print(f"[Done] Output: {OUT_ROOT}")
 
