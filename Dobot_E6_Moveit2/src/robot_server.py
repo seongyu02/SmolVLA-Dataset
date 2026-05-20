@@ -213,6 +213,9 @@ _state = {
     "last_place_y":   None,
     "task_mode":      "zone_move",
     "zone_episode_idx": 0,
+    "single_zone_target": 0,
+    "single_zone_done": 0,
+    "single_zone_id": None,
     "zone_stats":     {},
     "current_zone_id": None,
     "current_zone_episode": 0,
@@ -236,6 +239,7 @@ FIXED_INIT = (89.3715, -378.5400, 250.0000, -179.5275, -2.4369, 2.3663)
 ZONE_INIT_POSE = (89.3715, -378.5400, 250.0000, INIT_SAFE_RX, INIT_SAFE_RY, INIT_SAFE_RZ)
 ZONE_TARGET_Z = 120.0
 ZONE_XY_OFFSET_MM = 8.0
+ZONE4_XY_OFFSET_MM = 5.0
 ZONE_EPISODES_PER_ZONE = 10
 ZONE_ORDER = ["1", "5", "8", "9", "10"]
 ZONE_TASK_TOTAL = len(ZONE_ORDER) * ZONE_EPISODES_PER_ZONE
@@ -250,6 +254,9 @@ def _reset_zone_progress():
     _state["zone_stats"] = _new_zone_stats()
     _state["current_zone_id"] = None
     _state["current_zone_episode"] = 0
+    _state["single_zone_target"] = 0
+    _state["single_zone_done"] = 0
+    _state["single_zone_id"] = None
     _state["last_auto_error"] = ""
     _state["last_auto_done"] = 0
     _state["last_auto_target"] = 0
@@ -261,6 +268,7 @@ def _mid_pose(a, b):
 
 ZONE_POSES = {
     "1": (base.POS_5[0] - 20.0, base.POS_1[1], base.POS_1[2], base.POS_1[3], base.POS_1[4], base.POS_1[5]),
+    "4": base.POS_4,
     "5": (base.POS_5[0] - 20.0, base.POS_5[1], base.POS_5[2], base.POS_5[3], base.POS_5[4], base.POS_5[5]),
     "8": base.POS_8,
     "9": base.POS_9,
@@ -646,11 +654,12 @@ def _stop_and_save(success: bool):
 
 class ZoneMoveWithoutSuctionWorker(threading.Thread):
     """초기자세 -> target zone 하강 완료까지만 recording하고, 복귀는 녹화하지 않는다."""
-    def __init__(self, robot, zone_id: str, episode_in_zone: int):
+    def __init__(self, robot, zone_id: str, episode_in_zone: int, xy_offset_mm: float = ZONE_XY_OFFSET_MM):
         super().__init__(daemon=True)
         self.robot = robot
         self.zone_id = str(zone_id)
         self.episode_in_zone = int(episode_in_zone)
+        self.xy_offset_mm = float(xy_offset_mm)
         self._stop_requested = False
         self._recording_saved_before_finished = False
         self.log_signal = _BoundSignal()
@@ -718,8 +727,8 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
         base_pose = ZONE_POSES[self.zone_id]
         bx, by, *_ = [float(v) for v in base_pose[:6]]
         for attempt in range(60):
-            x = bx + random.uniform(-ZONE_XY_OFFSET_MM, ZONE_XY_OFFSET_MM)
-            y = by + random.uniform(-ZONE_XY_OFFSET_MM, ZONE_XY_OFFSET_MM)
+            x = bx + random.uniform(-self.xy_offset_mm, self.xy_offset_mm)
+            y = by + random.uniform(-self.xy_offset_mm, self.xy_offset_mm)
             z = ZONE_TARGET_Z
             rx, ry, rz = base.get_descent_rpy(x, y)
             ok, msg = self.robot.check_ik_solution(x, y, z, rx, ry, rz)
@@ -831,6 +840,31 @@ def _on_finished(success: bool):
         _state["pick_section"] = "B" if _state["pick_section"] == "A" else "A"
         _log(f"Place ({w.place_x:.1f},{w.place_y:.1f}) / next: {_state['pick_section']}")
 
+    if _state.get("single_zone_target", 0) > 0:
+        zone_stats = _state["zone_stats"].setdefault(
+            zone_id, {"success": 0, "fail": 0, "status": "pending"}
+        )
+        if not success:
+            zone_stats["fail"] += 1
+            zone_stats["status"] = "failed"
+            ep_label = episode_in_zone + 1 if episode_in_zone is not None else "?"
+            _state["last_auto_error"] = f"Failed at zone {zone_id}, episode {ep_label}"
+            _log("⚠ 4구역 수집 중단됨 (실패/STOP)")
+            _state["single_zone_target"] = 0
+            return
+        zone_stats["success"] += 1
+        _state["single_zone_done"] += 1
+        done = _state["single_zone_done"]
+        target = _state["single_zone_target"]
+        zone_stats["status"] = "done" if done >= target else "running"
+        _log(f"Zone {zone_id} only collect {done}/{target}")
+        if done >= target:
+            _state["single_zone_target"] = 0
+            _log(f"Zone {zone_id} only collect complete")
+        else:
+            threading.Timer(0.3, _run_step).start()
+        return
+
     if auto_target > 0:
         zone_stats = _state["zone_stats"].setdefault(
             zone_id, {"success": 0, "fail": 0, "status": "pending"}
@@ -873,14 +907,21 @@ def _run_step():
     if _state["worker"] and _state["worker"].isRunning():
         _log("Worker already running"); return
 
-    if _state.get("auto_target", 0) > 0:
+    if _state.get("single_zone_target", 0) > 0:
+        zone_id = str(_state.get("single_zone_id") or "4")
+        ep_in_zone = int(_state.get("single_zone_done", 0))
+        xy_offset_mm = ZONE4_XY_OFFSET_MM
+    elif _state.get("auto_target", 0) > 0:
         seq_idx = min(_state["auto_done"] // ZONE_EPISODES_PER_ZONE, len(ZONE_ORDER) - 1)
         ep_in_zone = _state["auto_done"] % ZONE_EPISODES_PER_ZONE
+        zone_id = ZONE_ORDER[seq_idx]
+        xy_offset_mm = ZONE_XY_OFFSET_MM
     else:
         seq_idx = _state.get("zone_episode_idx", 0) % len(ZONE_ORDER)
         ep_in_zone = 0
         _state["zone_episode_idx"] = seq_idx + 1
-    zone_id = ZONE_ORDER[seq_idx]
+        zone_id = ZONE_ORDER[seq_idx]
+        xy_offset_mm = ZONE_XY_OFFSET_MM
     _state["current_zone_id"] = zone_id
     _state["current_zone_episode"] = ep_in_zone + 1
     zone_stats = _state["zone_stats"].setdefault(
@@ -889,7 +930,9 @@ def _run_step():
     if zone_stats["success"] < ZONE_EPISODES_PER_ZONE:
         zone_stats["status"] = "running"
 
-    worker = ZoneMoveWithoutSuctionWorker(robot, zone_id=zone_id, episode_in_zone=ep_in_zone)
+    worker = ZoneMoveWithoutSuctionWorker(
+        robot, zone_id=zone_id, episode_in_zone=ep_in_zone, xy_offset_mm=xy_offset_mm
+    )
     worker.log_signal.connect(_on_log)
     worker.finished.connect(_on_finished)
     worker.episode_vacuum_durations.connect(_on_vacuum)
@@ -1040,6 +1083,9 @@ def status():
         "frames":         _state["record_frame_count"],
         "auto_target":    _state["auto_target"],
         "auto_done":      _state["auto_done"],
+        "single_zone_target": _state["single_zone_target"],
+        "single_zone_done": _state["single_zone_done"],
+        "single_zone_id": _state["single_zone_id"],
         "zone_order":     ZONE_ORDER,
         "zone_episodes_per_zone": ZONE_EPISODES_PER_ZONE,
         "zone_stats":     _state["zone_stats"],
@@ -1218,11 +1264,6 @@ def zone_dataset_step():
 def zone_dataset_start(episodes_per_zone: int = ZONE_EPISODES_PER_ZONE):
     episodes_per_zone = max(1, int(episodes_per_zone))
     total = len(ZONE_ORDER) * episodes_per_zone
-    if episodes_per_zone != ZONE_EPISODES_PER_ZONE:
-        return JSONResponse(
-            {"ok": False, "msg": f"episodes_per_zone must be {ZONE_EPISODES_PER_ZONE} for current zone schedule"},
-            status_code=400,
-        )
     if _state["worker"] and _state["worker"].isRunning():
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=400)
     if not _state["robot"] or not _state["robot"].connected:
@@ -1236,10 +1277,30 @@ def zone_dataset_start(episodes_per_zone: int = ZONE_EPISODES_PER_ZONE):
     threading.Thread(target=_run_step, daemon=True).start()
     return {"ok": True}
 
+@app.post("/zone4-section/start")
+def zone4_section_start(n: int = 10):
+    n = 10
+    if _state["worker"] and _state["worker"].isRunning():
+        return JSONResponse({"ok": False, "msg": "Already running"}, status_code=400)
+    if not _state["robot"] or not _state["robot"].connected:
+        return JSONResponse({"ok": False, "msg": "Not connected"}, status_code=400)
+    _reset_zone_progress()
+    _state["auto_target"] = 0
+    _state["auto_done"] = 0
+    _state["single_zone_id"] = "4"
+    _state["single_zone_target"] = n
+    _state["single_zone_done"] = 0
+    _state["zone_stats"].setdefault("4", {"success": 0, "fail": 0, "status": "pending"})
+    _state["zone_stats"]["4"]["status"] = "running"
+    _log(f"Zone 4 section collect started: {n} episodes (XY ±{ZONE4_XY_OFFSET_MM}mm)")
+    threading.Thread(target=_run_step, daemon=True).start()
+    return {"ok": True}
+
 @app.post("/pick-place/stop")
 def stop_collect():
     if _state["worker"]: _state["worker"]._stop_requested = True
     _state["auto_target"] = 0
+    _state["single_zone_target"] = 0
     _log("Stop requested")
     return {"ok": True}
 
@@ -1498,8 +1559,9 @@ input[type=range]{width:100%;accent-color:#00c8e8}
     </table>
     <div class="row">
       <button class="btn-g" onclick="api('POST','/zone-dataset/step')">▶ Zone Step</button>
-      <input id="auto-n" type="number" value="50" min="1" style="max-width:55px">
-      <button class="btn-g" onclick="autoCollect()">▶ Auto 50</button>
+      <input id="auto-n" type="number" value="10" min="1" style="max-width:55px">
+      <button class="btn-g" onclick="autoCollect()">▶ Auto</button>
+      <button class="btn-g" onclick="collectZone4Only()">▶ 4번 섹션</button>
       <button class="btn-y" onclick="api('POST','/pick-place/stop')">■ Stop</button>
     </div>
     <button class="btn-r" style="width:100%;padding:8px;font-size:.82rem;font-weight:700" onclick="doEstop()">⚠ E-STOP</button>
@@ -1691,7 +1753,10 @@ setInterval(async () => {
   $('hik-stat').style.color  = s.cam_hik ? '#2dc653' : '#668';
   $('zed-stat').textContent  = s.cam_zed ? 'ON ●' : 'OFF';
   $('zed-stat').style.color  = s.cam_zed ? '#2dc653' : '#668';
-  if(s.auto_target > 0) {
+  if((s.single_zone_target||0) > 0) {
+    $('auto-bar').textContent =
+      `Zone 4: ${s.single_zone_done}/${s.single_zone_target} | Current Zone: ${s.current_zone_id||'4'} | Episode: ${s.current_zone_episode||0}/${s.single_zone_target}`;
+  } else if(s.auto_target > 0) {
     $('auto-bar').textContent =
       `Auto: ${s.auto_done}/${s.auto_target} | Current Zone: ${s.current_zone_id||'—'} | Episode: ${s.current_zone_episode||0}/${s.zone_episodes_per_zone}`;
   } else if((s.last_auto_target||0) > 0) {
@@ -1704,8 +1769,9 @@ setInterval(async () => {
   }
   const zoneBody = $('zone-table-body');
   if(zoneBody) {
-    const order = s.zone_order || [];
+    const order = [...(s.zone_order || [])];
     const stats = s.zone_stats || {};
+    Object.keys(stats).forEach(zid => { if(!order.includes(zid)) order.push(zid); });
     zoneBody.innerHTML = order.map(zid => {
       const z = stats[zid] || {success:0, fail:0, status:'pending'};
       const status = z.status || 'pending';
@@ -1775,7 +1841,11 @@ const capturePose = async () => {
 };
 
 // Misc handlers
-const autoCollect = () => api('POST','/zone-dataset/start',{episodes_per_zone:10});
+const autoCollect = () => {
+  const n = Math.max(1, parseInt(($('auto-n')?.value || '10'), 10) || 10);
+  return api('POST','/zone-dataset/start',{episodes_per_zone:n});
+};
+const collectZone4Only = () => api('POST','/zone4-section/start',{n:10});
 const doEstop = () => { if(confirm('E-STOP?')) api('POST','/estop'); };
 const clearAlarm = async () => {
   const d = await api('POST','/clear-alarm');
