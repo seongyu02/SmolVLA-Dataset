@@ -237,6 +237,7 @@ ZONE_INIT_POSE = (89.3715, -378.5400, 250.0000, INIT_SAFE_RX, INIT_SAFE_RY, INIT
 ZONE_TARGET_Z = 120.0
 ZONE_X_OFFSET_MM = 5.0
 ZONE_Y_OFFSET_MM = 3.0
+ZONE_TRAVEL_Z_RANGE = (150.0, 240.0)
 ZONE_EPISODES_PER_ZONE = 10
 ZONE_ORDER = ["1", "5", "6", "8", "9"]
 ZONE_TASK_TOTAL = len(ZONE_ORDER) * ZONE_EPISODES_PER_ZONE
@@ -690,7 +691,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
         try:
             ix, iy, iz, irx, iry, irz = ZONE_INIT_POSE
             self._log("Return to initial pose (recording already stopped)...")
-            self._move(ix, iy, iz, irx, iry, irz, velocity=25.0)
+            self._move(ix, iy, iz, irx, iry, irz, velocity=30.0)
         except Exception as e:
             self._log(f"Return to initial failed: {e}")
 
@@ -756,7 +757,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
 
             ix, iy, iz, irx, iry, irz = ZONE_INIT_POSE
             self._log(f"1) Moving to initial pose for zone_{self.zone_id}...")
-            if not self._move(ix, iy, iz, irx, iry, irz, velocity=25.0):
+            if not self._move(ix, iy, iz, irx, iry, irz, velocity=30.0):
                 self._log("Failed: initial pose")
                 self.finished.emit(False)
                 return
@@ -775,12 +776,12 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
                 return
 
             tx, ty, tz, trx, try_, trz = target_pose
-            travel_z = random.uniform(base.Z_MOVE_MIN, base.Z_MOVE_MAX)
+            travel_z = random.uniform(*ZONE_TRAVEL_Z_RANGE)
             self._log(
                 f"3) Moving above zone_{self.zone_id}: "
                 f"X={tx:.1f} Y={ty:.1f} Z={travel_z:.1f}"
             )
-            if not self._move(tx, ty, travel_z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=24.0):
+            if not self._move(tx, ty, travel_z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=29.0):
                 self._log("Failed: move above target zone")
                 self._save_or_discard_recording(False)
                 self._return_to_initial_unrecorded()
@@ -788,7 +789,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
                 return
 
             self._log(f"4) Descending near zone_{self.zone_id}: Z={tz:.1f} (no suction)")
-            if not self._move(tx, ty, base.DESCENT_MID_Z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=18.0):
+            if not self._move(tx, ty, base.DESCENT_MID_Z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=23.0):
                 self._log("Failed: descend to mid Z")
                 self._save_or_discard_recording(False)
                 self._return_to_initial_unrecorded()
