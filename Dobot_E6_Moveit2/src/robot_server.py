@@ -1569,9 +1569,9 @@ input[type=range]{width:100%;accent-color:#00c8e8}
       <input id="auto-n" type="number" value="10" min="1" style="max-width:55px">
       <button class="btn-g" onclick="autoCollect()">▶ Auto</button>
       <button class="btn-g" onclick="collectZone4Only()">▶ 4번 섹션</button>
-      <button class="btn-g" onclick="collectZoneOnly('1')">▶ 1번 섹션</button>
-      <button class="btn-g" onclick="collectZoneOnly('5')">▶ 5번 섹션</button>
-      <button class="btn-g" onclick="collectZoneOnly('10')">▶ 10번 섹션</button>
+      <button class="btn-g" onclick="autoCollectEach(1)">▶ Auto x1</button>
+      <button class="btn-g" onclick="autoCollectEach(5)">▶ Auto x5</button>
+      <button class="btn-g" onclick="autoCollectEach(10)">▶ Auto x10</button>
       <button class="btn-y" onclick="api('POST','/pick-place/stop')">■ Stop</button>
     </div>
     <button class="btn-r" style="width:100%;padding:8px;font-size:.82rem;font-weight:700" onclick="doEstop()">⚠ E-STOP</button>
@@ -1855,8 +1855,8 @@ const autoCollect = () => {
   const n = Math.max(1, parseInt(($('auto-n')?.value || '10'), 10) || 10);
   return api('POST','/zone-dataset/start',{episodes_per_zone:n});
 };
+const autoCollectEach = n => api('POST','/zone-dataset/start',{episodes_per_zone:n});
 const collectZone4Only = () => api('POST','/zone4-section/start',{n:10});
-const collectZoneOnly = zone_id => api('POST','/zone-section/start',{zone_id, n:10});
 const doEstop = () => { if(confirm('E-STOP?')) api('POST','/estop'); };
 const clearAlarm = async () => {
   const d = await api('POST','/clear-alarm');
