@@ -915,7 +915,8 @@ def _run_step():
         seq_idx = min(_state["auto_done"] // ZONE_EPISODES_PER_ZONE, len(ZONE_ORDER) - 1)
         ep_in_zone = _state["auto_done"] % ZONE_EPISODES_PER_ZONE
         zone_id = ZONE_ORDER[seq_idx]
-        xy_offset_mm = ZONE_XY_OFFSET_MM
+        # Auto path uses the same XY threshold as the zone-section mode.
+        xy_offset_mm = SINGLE_ZONE_XY_OFFSET_MM
     else:
         seq_idx = _state.get("zone_episode_idx", 0) % len(ZONE_ORDER)
         ep_in_zone = 0
