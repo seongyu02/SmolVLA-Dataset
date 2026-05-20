@@ -235,7 +235,8 @@ FIXED_INIT = (89.3715, -378.5400, 250.0000, -179.5275, -2.4369, 2.3663)
 # - ZONE_XY_OFFSET_MM: 목표 zone 내부 XY 미세 랜덤 offset.
 ZONE_INIT_POSE = (89.3715, -378.5400, 250.0000, INIT_SAFE_RX, INIT_SAFE_RY, INIT_SAFE_RZ)
 ZONE_TARGET_Z = 120.0
-ZONE_XY_OFFSET_MM = 5.0
+ZONE_X_OFFSET_MM = 5.0
+ZONE_Y_OFFSET_MM = 3.0
 ZONE_EPISODES_PER_ZONE = 10
 ZONE_ORDER = ["1", "5", "6", "8", "9"]
 ZONE_TASK_TOTAL = len(ZONE_ORDER) * ZONE_EPISODES_PER_ZONE
@@ -643,12 +644,20 @@ def _stop_and_save(success: bool):
 
 class ZoneMoveWithoutSuctionWorker(threading.Thread):
     """초기자세 -> target zone 하강 완료까지만 recording하고, 복귀는 녹화하지 않는다."""
-    def __init__(self, robot, zone_id: str, episode_in_zone: int, xy_offset_mm: float = ZONE_XY_OFFSET_MM):
+    def __init__(
+        self,
+        robot,
+        zone_id: str,
+        episode_in_zone: int,
+        x_offset_mm: float = ZONE_X_OFFSET_MM,
+        y_offset_mm: float = ZONE_Y_OFFSET_MM,
+    ):
         super().__init__(daemon=True)
         self.robot = robot
         self.zone_id = str(zone_id)
         self.episode_in_zone = int(episode_in_zone)
-        self.xy_offset_mm = float(xy_offset_mm)
+        self.x_offset_mm = float(x_offset_mm)
+        self.y_offset_mm = float(y_offset_mm)
         self._stop_requested = False
         self._recording_saved_before_finished = False
         self.log_signal = _BoundSignal()
@@ -716,8 +725,8 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
         base_pose = ZONE_POSES[self.zone_id]
         bx, by, *_ = [float(v) for v in base_pose[:6]]
         for attempt in range(60):
-            x = bx + random.uniform(-self.xy_offset_mm, self.xy_offset_mm)
-            y = by + random.uniform(-self.xy_offset_mm, self.xy_offset_mm)
+            x = bx + random.uniform(-self.x_offset_mm, self.x_offset_mm)
+            y = by + random.uniform(-self.y_offset_mm, self.y_offset_mm)
             z = ZONE_TARGET_Z
             rx, ry, rz = base.get_descent_rpy(x, y)
             ok, msg = self.robot.check_ik_solution(x, y, z, rx, ry, rz)
@@ -875,13 +884,15 @@ def _run_step():
         seq_idx = min(_state["auto_done"] // ZONE_EPISODES_PER_ZONE, len(ZONE_ORDER) - 1)
         ep_in_zone = _state["auto_done"] % ZONE_EPISODES_PER_ZONE
         zone_id = ZONE_ORDER[seq_idx]
-        xy_offset_mm = ZONE_XY_OFFSET_MM
+        x_offset_mm = ZONE_X_OFFSET_MM
+        y_offset_mm = ZONE_Y_OFFSET_MM
     else:
         seq_idx = _state.get("zone_episode_idx", 0) % len(ZONE_ORDER)
         ep_in_zone = 0
         _state["zone_episode_idx"] = seq_idx + 1
         zone_id = ZONE_ORDER[seq_idx]
-        xy_offset_mm = ZONE_XY_OFFSET_MM
+        x_offset_mm = ZONE_X_OFFSET_MM
+        y_offset_mm = ZONE_Y_OFFSET_MM
     _state["current_zone_id"] = zone_id
     _state["current_zone_episode"] = ep_in_zone + 1
     zone_stats = _state["zone_stats"].setdefault(
@@ -891,7 +902,11 @@ def _run_step():
         zone_stats["status"] = "running"
 
     worker = ZoneMoveWithoutSuctionWorker(
-        robot, zone_id=zone_id, episode_in_zone=ep_in_zone, xy_offset_mm=xy_offset_mm
+        robot,
+        zone_id=zone_id,
+        episode_in_zone=ep_in_zone,
+        x_offset_mm=x_offset_mm,
+        y_offset_mm=y_offset_mm,
     )
     worker.log_signal.connect(_on_log)
     worker.finished.connect(_on_finished)
