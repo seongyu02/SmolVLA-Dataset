@@ -691,7 +691,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
         try:
             ix, iy, iz, irx, iry, irz = ZONE_INIT_POSE
             self._log("Return to initial pose (recording already stopped)...")
-            self._move(ix, iy, iz, irx, iry, irz, velocity=30.0)
+            self._move(ix, iy, iz, irx, iry, irz, velocity=35.0)
         except Exception as e:
             self._log(f"Return to initial failed: {e}")
 
@@ -757,7 +757,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
 
             ix, iy, iz, irx, iry, irz = ZONE_INIT_POSE
             self._log(f"1) Moving to initial pose for zone_{self.zone_id}...")
-            if not self._move(ix, iy, iz, irx, iry, irz, velocity=30.0):
+            if not self._move(ix, iy, iz, irx, iry, irz, velocity=35.0):
                 self._log("Failed: initial pose")
                 self.finished.emit(False)
                 return
@@ -781,7 +781,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
                 f"3) Moving above zone_{self.zone_id}: "
                 f"X={tx:.1f} Y={ty:.1f} Z={travel_z:.1f}"
             )
-            if not self._move(tx, ty, travel_z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=29.0):
+            if not self._move(tx, ty, travel_z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=34.0):
                 self._log("Failed: move above target zone")
                 self._save_or_discard_recording(False)
                 self._return_to_initial_unrecorded()
@@ -789,7 +789,7 @@ class ZoneMoveWithoutSuctionWorker(threading.Thread):
                 return
 
             self._log(f"4) Descending near zone_{self.zone_id}: Z={tz:.1f} (no suction)")
-            if not self._move(tx, ty, base.DESCENT_MID_Z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=23.0):
+            if not self._move(tx, ty, base.DESCENT_MID_Z, base.TRAVEL_RX, base.TRAVEL_RY, base.TRAVEL_RZ, velocity=28.0):
                 self._log("Failed: descend to mid Z")
                 self._save_or_discard_recording(False)
                 self._return_to_initial_unrecorded()
