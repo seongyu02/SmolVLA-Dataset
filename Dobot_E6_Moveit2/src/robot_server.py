@@ -208,6 +208,8 @@ _state = {
     "episode_meta":   {},
     "auto_target":    0,
     "auto_done":      0,
+    "auto_zone_order": [],
+    "auto_episodes_per_zone": 0,
     "pick_section":   "A",
     "last_place_x":   None,
     "last_place_y":   None,
@@ -252,6 +254,8 @@ def _reset_zone_progress():
     _state["zone_stats"] = _new_zone_stats()
     _state["current_zone_id"] = None
     _state["current_zone_episode"] = 0
+    _state["auto_zone_order"] = []
+    _state["auto_episodes_per_zone"] = 0
     _state["last_auto_error"] = ""
     _state["last_auto_done"] = 0
     _state["last_auto_target"] = 0
@@ -840,6 +844,8 @@ def _on_finished(success: bool):
         _log(f"Place ({w.place_x:.1f},{w.place_y:.1f}) / next: {_state['pick_section']}")
 
     if auto_target > 0:
+        auto_zones = _state.get("auto_zone_order") or list(ZONE_ORDER)
+        episodes_per_zone = int(_state.get("auto_episodes_per_zone") or ZONE_EPISODES_PER_ZONE)
         zone_stats = _state["zone_stats"].setdefault(
             zone_id, {"success": 0, "fail": 0, "status": "pending"}
         )
@@ -858,13 +864,13 @@ def _on_finished(success: bool):
         _state["auto_done"] += 1
         _state["last_auto_done"] = _state["auto_done"]
         _state["last_auto_target"] = auto_target
-        zone_stats["status"] = "done" if zone_stats["success"] >= ZONE_EPISODES_PER_ZONE else "running"
+        zone_stats["status"] = "done" if zone_stats["success"] >= episodes_per_zone else "running"
         _log(f"Auto {_state['auto_done']}/{_state['auto_target']}")
         if _state["auto_done"] >= auto_target:
             _state["last_auto_done"] = _state["auto_done"]
             _state["last_auto_target"] = auto_target
             _state["last_auto_error"] = ""
-            for zid in ZONE_ORDER:
+            for zid in auto_zones:
                 _state["zone_stats"].setdefault(zid, {"success": 0, "fail": 0, "status": "pending"})
                 _state["zone_stats"][zid]["status"] = "done"
             _state["auto_target"] = 0
@@ -882,9 +888,11 @@ def _run_step():
         _log("Worker already running"); return
 
     if _state.get("auto_target", 0) > 0:
-        seq_idx = min(_state["auto_done"] // ZONE_EPISODES_PER_ZONE, len(ZONE_ORDER) - 1)
-        ep_in_zone = _state["auto_done"] % ZONE_EPISODES_PER_ZONE
-        zone_id = ZONE_ORDER[seq_idx]
+        auto_zones = _state.get("auto_zone_order") or list(ZONE_ORDER)
+        episodes_per_zone = int(_state.get("auto_episodes_per_zone") or ZONE_EPISODES_PER_ZONE)
+        seq_idx = min(_state["auto_done"] // episodes_per_zone, len(auto_zones) - 1)
+        ep_in_zone = _state["auto_done"] % episodes_per_zone
+        zone_id = auto_zones[seq_idx]
         x_offset_mm = ZONE_X_OFFSET_MM
         y_offset_mm = ZONE_Y_OFFSET_MM
     else:
@@ -899,7 +907,12 @@ def _run_step():
     zone_stats = _state["zone_stats"].setdefault(
         zone_id, {"success": 0, "fail": 0, "status": "pending"}
     )
-    if zone_stats["success"] < ZONE_EPISODES_PER_ZONE:
+    episodes_per_zone_now = (
+        int(_state.get("auto_episodes_per_zone") or ZONE_EPISODES_PER_ZONE)
+        if _state.get("auto_target", 0) > 0
+        else ZONE_EPISODES_PER_ZONE
+    )
+    if zone_stats["success"] < episodes_per_zone_now:
         zone_stats["status"] = "running"
 
     worker = ZoneMoveWithoutSuctionWorker(
@@ -1059,6 +1072,8 @@ def status():
         "frames":         _state["record_frame_count"],
         "auto_target":    _state["auto_target"],
         "auto_done":      _state["auto_done"],
+        "auto_zone_order": _state["auto_zone_order"],
+        "auto_episodes_per_zone": _state["auto_episodes_per_zone"],
         "zone_order":     ZONE_ORDER,
         "zone_episodes_per_zone": ZONE_EPISODES_PER_ZONE,
         "zone_stats":     _state["zone_stats"],
@@ -1233,20 +1248,46 @@ def auto_collect(n: int = ZONE_TASK_TOTAL):
 def zone_dataset_step():
     return step()
 
+def _parse_zone_selection(zones: Optional[str]) -> list[str]:
+    if zones is None:
+        return list(ZONE_ORDER)
+    raw = str(zones).strip()
+    if raw == "":
+        return list(ZONE_ORDER)
+    if raw.upper() == "ALL":
+        return list(ZONE_ORDER)
+    selected = []
+    for token in [t.strip() for t in raw.split(",")]:
+        if not token:
+            continue
+        if token not in ZONE_POSES:
+            raise ValueError(f"Unknown zone_id: {token}")
+        if token not in selected:
+            selected.append(token)
+    if not selected:
+        raise ValueError("No valid zones selected")
+    return selected
+
 @app.post("/zone-dataset/start")
-def zone_dataset_start(episodes_per_zone: int = ZONE_EPISODES_PER_ZONE):
+def zone_dataset_start(episodes_per_zone: int = ZONE_EPISODES_PER_ZONE, zones: Optional[str] = None):
     episodes_per_zone = max(1, int(episodes_per_zone))
-    total = len(ZONE_ORDER) * episodes_per_zone
+    try:
+        selected_zones = _parse_zone_selection(zones)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "msg": str(e)}, status_code=400)
+    total = len(selected_zones) * episodes_per_zone
     if _state["worker"] and _state["worker"].isRunning():
         return JSONResponse({"ok": False, "msg": "Already running"}, status_code=400)
     if not _state["robot"] or not _state["robot"].connected:
         return JSONResponse({"ok": False, "msg": "Not connected"}, status_code=400)
     _reset_zone_progress()
+    _state["auto_zone_order"] = selected_zones
+    _state["auto_episodes_per_zone"] = episodes_per_zone
     _state["auto_target"] = total
     _state["auto_done"] = 0
     _state["last_auto_target"] = total
     _state["last_auto_done"] = 0
-    _log(f"Zone dataset auto collect started: {total} episodes")
+    _log(f"Zone dataset auto collect started: {total} episodes / zones={selected_zones} / per_zone={episodes_per_zone}")
     threading.Thread(target=_run_step, daemon=True).start()
     return {"ok": True}
 
@@ -1416,6 +1457,8 @@ img.stream{width:100%;height:480px;object-fit:contain;display:block;background:#
 /* separator */
 .sep{border-top:1px solid #1e2a3a;margin:8px 0}
 .sub{font-size:.63rem;color:#557;margin-bottom:5px;margin-top:2px}
+.zone-select{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.zone-select label{font-size:.68rem;color:#aac8e0;display:flex;align-items:center;gap:3px}
 
 /* ── JOG ── */
 /* D-pad: 3×3 grid */
@@ -1503,6 +1546,15 @@ input[type=range]{width:100%;accent-color:#00c8e8}
   <div class="card">
     <h3>Zone Move Dataset</h3>
     <div id="auto-bar" class="sbar">Ready</div>
+    <div class="sub">Zone Selection</div>
+    <div class="zone-select">
+      <label><input type="checkbox" id="zone-all" checked>ALL</label>
+      <label><input type="checkbox" class="zone-opt" value="2" checked>2</label>
+      <label><input type="checkbox" class="zone-opt" value="5" checked>5</label>
+      <label><input type="checkbox" class="zone-opt" value="6" checked>6</label>
+      <label><input type="checkbox" class="zone-opt" value="8" checked>8</label>
+      <label><input type="checkbox" class="zone-opt" value="9" checked>9</label>
+    </div>
     <div class="sub">Zone Progress</div>
     <table id="zone-table">
       <thead>
@@ -1513,7 +1565,7 @@ input[type=range]{width:100%;accent-color:#00c8e8}
     <div class="row">
       <button class="btn-g" onclick="api('POST','/zone-dataset/step')">▶ Zone Step</button>
       <input id="auto-n" type="number" value="10" min="1" style="max-width:55px">
-      <button class="btn-g" onclick="autoCollect()">▶ Auto</button>
+      <button class="btn-g" onclick="autoCollect()">▶ Auto Selected</button>
       <button class="btn-y" onclick="api('POST','/pick-place/stop')">■ Stop</button>
     </div>
     <button class="btn-r" style="width:100%;padding:8px;font-size:.82rem;font-weight:700" onclick="doEstop()">⚠ E-STOP</button>
@@ -1666,6 +1718,25 @@ const api = async (m, p, q={}) => {
 const addLog = msg => {
   const b=$('log'); b.innerHTML += msg+'<br>'; b.scrollTop=b.scrollHeight;
 };
+const zoneOpts = () => Array.from(document.querySelectorAll('.zone-opt'));
+const selectedZones = () => zoneOpts().filter(el => el.checked).map(el => el.value);
+const syncZoneAll = () => {
+  const all = $('zone-all');
+  const opts = zoneOpts();
+  if(!all || !opts.length) return;
+  all.checked = opts.every(el => el.checked);
+};
+const initZoneSelector = () => {
+  const all = $('zone-all');
+  const opts = zoneOpts();
+  if(all){
+    all.addEventListener('change', () => {
+      opts.forEach(el => { el.checked = all.checked; });
+    });
+  }
+  opts.forEach(el => el.addEventListener('change', syncZoneAll));
+  syncZoneAll();
+};
 
 // WebSocket
 const ws = new WebSocket(`ws://${location.host}/ws/logs`);
@@ -1705,9 +1776,11 @@ setInterval(async () => {
   $('hik-stat').style.color  = s.cam_hik ? '#2dc653' : '#668';
   $('zed-stat').textContent  = s.cam_zed ? 'ON ●' : 'OFF';
   $('zed-stat').style.color  = s.cam_zed ? '#2dc653' : '#668';
+  const activeZones = (s.auto_zone_order && s.auto_zone_order.length) ? s.auto_zone_order : (s.zone_order || []);
+  const perZone = s.auto_episodes_per_zone || s.zone_episodes_per_zone;
   if(s.auto_target > 0) {
     $('auto-bar').textContent =
-      `Auto: ${s.auto_done}/${s.auto_target} | Current Zone: ${s.current_zone_id||'—'} | Episode: ${s.current_zone_episode||0}/${s.zone_episodes_per_zone}`;
+      `Auto: ${s.auto_done}/${s.auto_target} | Zones: ${activeZones.join(',')} | Current Zone: ${s.current_zone_id||'—'} | Episode: ${s.current_zone_episode||0}/${perZone}`;
   } else if((s.last_auto_target||0) > 0) {
     $('auto-bar').textContent = `Last Auto: ${s.last_auto_done}/${s.last_auto_target}`
       + (s.last_auto_error ? ` | Failed: ${s.last_auto_error}` : ' | Complete');
@@ -1718,13 +1791,13 @@ setInterval(async () => {
   }
   const zoneBody = $('zone-table-body');
   if(zoneBody) {
-    const order = [...(s.zone_order || [])];
+    const order = [...activeZones];
     const stats = s.zone_stats || {};
     Object.keys(stats).forEach(zid => { if(!order.includes(zid)) order.push(zid); });
     zoneBody.innerHTML = order.map(zid => {
       const z = stats[zid] || {success:0, fail:0, status:'pending'};
       const status = z.status || 'pending';
-      return `<tr><td>${zid}</td><td>${z.success||0}/${s.zone_episodes_per_zone}</td><td>${z.fail||0}</td><td class="zstat ${status}">${status}</td></tr>`;
+      return `<tr><td>${zid}</td><td>${z.success||0}/${perZone}</td><td>${z.fail||0}</td><td class="zstat ${status}">${status}</td></tr>`;
     }).join('');
   }
 }, 800);
@@ -1792,13 +1865,19 @@ const capturePose = async () => {
 // Misc handlers
 const autoCollect = () => {
   const n = Math.max(1, parseInt(($('auto-n')?.value || '10'), 10) || 10);
-  return api('POST','/zone-dataset/start',{episodes_per_zone:n});
+  const zones = selectedZones();
+  if(!zones.length) {
+    addLog('✗ 최소 1개 zone을 선택하세요.');
+    return;
+  }
+  return api('POST','/zone-dataset/start',{episodes_per_zone:n, zones:zones.join(',')});
 };
 const doEstop = () => { if(confirm('E-STOP?')) api('POST','/estop'); };
 const clearAlarm = async () => {
   const d = await api('POST','/clear-alarm');
   if(d&&d.ok) addLog('✓ Alarm cleared');
 };
+initZoneSelector();
 </script>
 </body>
 </html>"""
