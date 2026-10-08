@@ -21,8 +21,8 @@ import numpy as np
 import pandas as pd
 
 
-RAW_ROOT = Path("/media/billye6/새 볼륨/Dobot/SmolVLA")
-OUT_ROOT = Path("/media/billye6/새 볼륨/Dobot/SmolVLA_lerobot_v21")
+RAW_ROOT = Path("/mnt/robotdata/Dobot/SmolVLA_Dataset")
+OUT_ROOT = Path("/mnt/robotdata/Dobot/SmolVLA_Dataset_lerobot_v21")
 FPS = 20
 OVERWRITE = True
 TEST_LEROBOT_LOAD = True
@@ -38,9 +38,18 @@ VIDEO_KEYS = {
     "hik": "observation.images.OBS_IMAGE_1",
     "zed": "observation.images.OBS_IMAGE_2",
 }
-CROP_XYXY = {
-    "hik": [94, 0, 574, 480],
-    "zed": [80, 0, 560, 480],
+# 크롭은 **비율(0~1)** 로 정의한다. 수집이 원본 해상도로 저장되도록 바뀌면서
+# 입력이 HIK 2592×1944 · ZED 1920×1080 로 들어오는데, 픽셀 좌표로 두면 해상도가
+# 바뀔 때마다 엉뚱한 곳을 자른다. 비율이면 어느 해상도에서도 같은 영역이다.
+#
+#   hik  (324,0)-(2268,1944) = 1944×1944 정사각 (2026-09-16 변경, 왜곡 0).
+#        4:3 센서를 정사각으로 만들며 가로 좌우 각 324px 을 버린다.
+#   zed  (780,270)-(1590,1080) @1920×1080 = 810×810 정사각.
+#        2026-09-15 실제 프레임을 보고 고른 값으로, 로봇팔과 체커보드 위 박스가
+#        화면을 채우고 벽·창문·책장이 빠진다.
+CROP_NORM = {
+    "hik": [324 / 2592, 0 / 1944, 2268 / 2592, 1944 / 1944],
+    "zed": [780 / 1920, 0 / 1080, 1590 / 1920, 810 / 1080],
 }
 
 STATE_COLUMNS = [
@@ -87,18 +96,27 @@ def crop_resize_for_lerobot(img, camera_name):
     elif len(img.shape) == 3 and img.shape[2] == 4:
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-    h, w = img.shape[:2]
-    if (w, h) != RAW_SIZE:
-        img = cv2.resize(img, RAW_SIZE, interpolation=cv2.INTER_AREA)
-
-    if camera_name not in CROP_XYXY:
+    # 🔴 예전에는 여기서 먼저 RAW_SIZE(640×480) 로 줄이고 크롭했다. 수집이 원본
+    #    해상도로 바뀐 뒤에는 그 축소가 원본의 이점을 먼저 버리는 셈이라 없앴다.
+    #    이제 원본에서 바로 크롭하고 한 번만 512 로 줄인다.
+    if camera_name not in CROP_NORM:
         raise RuntimeError(f"Unknown camera_name: {camera_name}")
 
-    x1, y1, x2, y2 = CROP_XYXY[camera_name]
+    # 🔴 2026-09-16 부터 수집이 **이미 512×512 로 저장**한다(robot_server.to_512,
+    #    CROP_NORM 동일). 여기서 또 CROP_NORM 을 적용하면 zed 는 화각이 두 번
+    #    깎이고(810×810 안에서 다시 잘림) 업스케일까지 된다. 그대로 통과시킨다.
+    #    ⚠️ 원본 해상도로 저장된 옛 에피소드는 이 분기를 타지 않으므로 종전대로다.
+    if img.shape[:2] == (VIDEO_SIZE[1], VIDEO_SIZE[0]):
+        return img
+
+    h, w = img.shape[:2]
+    fx1, fy1, fx2, fy2 = CROP_NORM[camera_name]
+    x1, x2 = int(round(fx1 * w)), int(round(fx2 * w))
+    y1, y2 = int(round(fy1 * h)), int(round(fy2 * h))
     crop = img[y1:y2, x1:x2]
-    if crop.shape[:2] != (480, 480):
+    if crop.size == 0:
         raise RuntimeError(
-            f"{camera_name}: crop shape must be 480x480, got {crop.shape}"
+            f"{camera_name}: empty crop from {w}x{h} with {CROP_NORM[camera_name]}"
         )
 
     return cv2.resize(crop, VIDEO_SIZE, interpolation=cv2.INTER_AREA)

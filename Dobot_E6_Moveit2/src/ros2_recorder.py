@@ -32,6 +32,14 @@ def crop_center_480_resize_512(img):
     h, w = img.shape[:2]
     if h <= 0 or w <= 0:
         return np.zeros((512, 512, 3), dtype=np.uint8)
+
+    # 🔴 2026-09-16: robot_server 가 그랩 루프에서 이미 512×512 로 만들어 발행한다.
+    #    여기서 또 중앙 480 을 잘라 512 로 늘리면 화각이 6% 더 깎이고 업스케일까지
+    #    되어, 같은 폴더에 쓰는 _record_tick 의 그림과 **다른 그림**이 된다.
+    #    두 writer 가 같은 파일명을 쓰므로 그러면 프레임마다 화각이 섞인다.
+    if (h, w) == (512, 512):
+        return img
+
     crop_size = 480
     if h >= crop_size and w >= crop_size:
         x0 = (w - crop_size) // 2
